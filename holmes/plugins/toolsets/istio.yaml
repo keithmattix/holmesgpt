@@ -1,0 +1,84 @@
+toolsets:
+  istio/core:
+    description: "Istio service mesh tools for troubleshooting connectivity, configuration, and proxy issues"
+    docs_url: "https://istio.io/latest/docs/reference/commands/istioctl/"
+    icon_url: "https://istio.io/latest/img/istio-whitelogo-bluebackground-framed.svg"
+    llm_instructions: |
+      You have access to Istio service mesh tools for debugging configuration, connectivity, and proxy issues.
+
+      ALWAYS follow this troubleshooting workflow:
+        1. Run `istioctl_analyze_cluster` or `istioctl_analyze_namespace` first to detect misconfigurations.
+           These commands surface schema errors, reference mismatches, and best-practice violations.
+        2. Run `istioctl_proxy_status` to verify that every Envoy sidecar is connected to the control plane
+           and that CDS/LDS/EDS/RDS are in SYNCED state. Look for STALE or NOT SENT entries.
+        3. Based on the cluster mode, branch to sidecar-specific or ambient-specific investigation tools.
+
+      Common footguns to check for:
+        - **Injection labeling confusion**: The namespace may use the legacy `istio-injection=enabled` label
+          while the control plane expects a revision label (`istio.io/rev=<revision>`), or vice versa.
+          After a canary upgrade, workloads injected by the old revision will not receive config from
+          the new control plane until they are restarted with the correct label.
+        - **Control plane revision drift**: After a canary upgrade, some namespaces or workloads may still
+          point to the old revision. Check `istioctl proxy-status` for proxies connected to different
+          control plane versions and verify that namespace labels match the intended revision.
+        - **PeerAuthentication scope precedence**: Istio evaluates PeerAuthentication policies in order
+          mesh-wide > namespace > workload. A strict mTLS policy at the mesh level will override a
+          permissive policy at the namespace level, causing unexpected 503 errors for non-mTLS traffic.
+        - **DestinationRule TLS mode mismatches**: If a DestinationRule sets `trafficPolicy.tls.mode: ISTIO_MUTUAL`
+          but the upstream does not have a sidecar, or sets `DISABLE` when mTLS is required, you will see
+          503 errors with flags like UF (upstream connection failure) or NR (no healthy upstream).
+        - **VirtualService host/gateway mismatch**: A VirtualService must reference the correct Gateway name
+          (namespace/name format if cross-namespace) and the hosts must match what the Gateway declares.
+          Mismatches silently drop routing rules. Also check `exportTo` visibility settings.
+        - **Port naming and protocol detection**: Istio uses the port name prefix (e.g., `http-`, `grpc-`,
+          `tcp-`) to detect protocols. Unnamed or incorrectly named ports fall back to opaque TCP proxying,
+          which breaks HTTP routing, retries, and telemetry.
+
+      {% if tool_names|list|length > 0 %}
+      The following Istio commands are available: {{ ", ".join(tool_names) }}
+      {% endif %}
+
+      ALWAYS provide specific actionable solutions based on the observed data rather than generic troubleshooting advice.
+    tags:
+      - cli
+    prerequisites:
+      - command: "istioctl version --short"
+      - command: "kubectl version --client"
+    tools:
+      - name: "istioctl_version"
+        description: "Show Istio control plane and client versions"
+        command: "istioctl version"
+
+      - name: "istioctl_analyze_cluster"
+        description: "Analyze the entire cluster for Istio configuration issues across all namespaces"
+        command: "istioctl analyze --all-namespaces"
+        transformers:
+          - name: llm_summarize
+            config:
+              input_threshold: 1000
+              prompt: |
+                Summarize this istioctl analyze output focusing on:
+                - Configuration errors and warnings
+                - Affected resources and namespaces
+                - Severity of each issue
+
+      - name: "istioctl_analyze_namespace"
+        description: "Analyze a specific namespace for Istio configuration issues"
+        command: "istioctl analyze -n {{ namespace }}"
+        args:
+          - name: "namespace"
+            type: "string"
+            description: "Kubernetes namespace to analyze for Istio configuration issues"
+
+      - name: "istioctl_proxy_status"
+        description: "Show sync status of all Envoy proxies with the Istio control plane (CDS/LDS/EDS/RDS)"
+        command: "istioctl proxy-status"
+        transformers:
+          - name: llm_summarize
+            config:
+              input_threshold: 1000
+              prompt: |
+                Summarize this istioctl proxy-status output focusing on:
+                - Proxies that are not in SYNCED state (STALE or NOT SENT)
+                - Proxies connected to different control plane versions
+                - Overall proxy connectivity health
